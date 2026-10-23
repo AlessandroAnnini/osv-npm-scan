@@ -14,6 +14,7 @@ const RANK = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, UNKNOWN: 0 };
 const NODE_CORE_INDEX =
   "https://raw.githubusercontent.com/nodejs/security-wg/main/vuln/core/index.json";
 const NODE_SCHEDULE = "https://raw.githubusercontent.com/nodejs/Release/main/schedule.json";
+const NODE_DIST = "https://nodejs.org/dist/index.json";
 
 function fail(error) {
   process.stdout.write(JSON.stringify({ ecosystem: ECOSYSTEM, error }, null, 2) + "\n");
@@ -452,7 +453,9 @@ export function runtimeFix(patched, version) {
 }
 
 // Match one Node version against the nodejs/security-wg core index and the release schedule.
-export function checkRuntime(version, platform, index, schedule, now = new Date()) {
+// dist is nodejs.org/dist/index.json. The index can lag a security release, so a newer
+// release in the same line marked `security` also counts.
+export function checkRuntime(version, platform, { index, schedule, dist }, now = new Date()) {
   const line = `v${parseSemver(version)?.major}`;
   const end = schedule?.[line]?.end ?? null;
   const advisories = [];
@@ -495,6 +498,17 @@ export function checkRuntime(version, platform, index, schedule, now = new Date(
       a.id.localeCompare(b.id),
   );
   const applicable = advisories.filter((item) => item.appliesToPlatform);
+  const major = parseSemver(version)?.major;
+  const missed = (Array.isArray(dist) ? dist : [])
+    .filter((release) => release?.security === true && typeof release.version === "string")
+    .map((release) => release.version.replace(/^v/, ""))
+    .filter((v) => parseSemver(v)?.major === major && compareVersions(v, version) > 0)
+    .sort((a, b) => compareVersions(a, b));
+  let fix = applicable.length ? upgradeTo(applicable) : null;
+  const latestSecurity = missed.at(-1) ?? null;
+  if (latestSecurity && (applicable.length === 0 || (fix && compareVersions(latestSecurity, fix) > 0))) {
+    fix = latestSecurity;
+  }
   return {
     runtime: {
       name: "node",
@@ -503,9 +517,10 @@ export function checkRuntime(version, platform, index, schedule, now = new Date(
       releaseLine: line,
       endOfLife: end ? new Date(`${end}T23:59:59Z`) < now : null,
       endOfLifeDate: end,
-      vulnerable: applicable.length > 0,
+      vulnerable: applicable.length > 0 || missed.length > 0,
       severity: applicable[0]?.severity ?? null,
-      upgradeTo: applicable.length ? upgradeTo(applicable) : null,
+      upgradeTo: fix,
+      missedSecurityReleases: missed,
       advisories,
     },
     warnings: unparsed,
@@ -560,29 +575,33 @@ function upgradeTo(advisories) {
 }
 
 export function parseArgs(argv) {
-  const args = { root: null, nodeVersion: null };
+  const args = { root: null, nodeVersion: null, nodePlatform: null };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     if (arg === "--node-version") args.nodeVersion = argv[++i] ?? "";
     else if (arg.startsWith("--node-version=")) args.nodeVersion = arg.slice(15);
+    else if (arg === "--node-platform") args.nodePlatform = argv[++i] ?? "";
+    else if (arg.startsWith("--node-platform=")) args.nodePlatform = arg.slice(16);
     else if (args.root === null) args.root = arg;
   }
   return args;
 }
 
-async function scanRuntime(nodeVersion) {
+async function scanRuntime(nodeVersion, nodePlatform) {
   const source = nodeVersion === null ? "process" : "flag";
   const version = (nodeVersion ?? process.version).replace(/^v/, "");
   if (!/^\d+\.\d+\.\d+$/.test(version)) {
     return { runtime: { name: "node", version, source, error: "not an exact x.y.z version" }, warnings: [] };
   }
-  console.error(`node runtime: ${version} (${source})`);
+  const platform = nodePlatform || process.platform;
+  console.error(`node runtime: ${version} on ${platform} (${source})`);
   try {
-    const [index, schedule] = await Promise.all([
+    const [index, schedule, dist] = await Promise.all([
       requestJson(NODE_CORE_INDEX),
       requestJson(NODE_SCHEDULE),
+      requestJson(NODE_DIST),
     ]);
-    const result = checkRuntime(version, process.platform, index, schedule);
+    const result = checkRuntime(version, platform, { index, schedule, dist });
     result.runtime = { ...result.runtime, source };
     return result;
   } catch (err) {
@@ -721,7 +740,7 @@ async function main() {
   });
 
   console.error(`vulnerable versions: ${findings.length}`);
-  const runtime = await scanRuntime(args.nodeVersion);
+  const runtime = await scanRuntime(args.nodeVersion, args.nodePlatform);
   warnings.push(...runtime.warnings);
   const report = {
     ecosystem: ECOSYSTEM,

@@ -61,20 +61,21 @@ A skipped lockfile, an unreadable directory, or a non-registry install does not 
 
 ## Runtime (npm only)
 
-`runtime` is specific to this skill. The NuGet and PyPI skills do not emit it. It is one Node.js version matched against the [nodejs/security-wg core index](https://github.com/nodejs/security-wg/blob/main/vuln/core/index.json) and the [nodejs/Release schedule](https://github.com/nodejs/Release/blob/main/schedule.json). It is separate from `findings` and does not change `vulnerablePackageVersions`.
+`runtime` is specific to this skill. The NuGet and PyPI skills do not emit it. It is one Node.js version matched against the [nodejs/security-wg core index](https://github.com/nodejs/security-wg/blob/main/vuln/core/index.json) the [nodejs/Release schedule](https://github.com/nodejs/Release/blob/main/schedule.json), and the [nodejs.org release list](https://nodejs.org/dist/index.json). It is separate from `findings` and does not change `vulnerablePackageVersions`.
 
 | Field | Meaning |
 | --- | --- |
 | `name` | Always `node` |
 | `version` | The version checked, without a leading `v` |
 | `source` | `process` for the Node that ran the script, `flag` for `--node-version` |
-| `platform` | `process.platform` of the scan. Advisories are scoped to it |
+| `platform` | `--node-platform`, or `process.platform` of the scan. Advisories are scoped to it |
 | `releaseLine` | Major line, such as `v22` |
 | `endOfLife` | True when the schedule's end date has passed. Null when the line is not in the schedule |
 | `endOfLifeDate` | The schedule's end date, or null |
-| `vulnerable` | True when at least one advisory applies to `platform` |
+| `vulnerable` | True when at least one advisory applies to `platform`, or `missedSecurityReleases` is not empty |
 | `severity` | Worst label among advisories that apply to `platform`, or null |
-| `upgradeTo` | Highest per-advisory fix among those that apply. Null when none apply or one has no fix in this release line |
+| `upgradeTo` | Highest per-advisory fix among those that apply, raised to the latest missed security release. Null when nothing applies, or when an advisory has no fix in this release line |
+| `missedSecurityReleases` | Releases in the same major, newer than `version`, that nodejs.org marks `security`. Ascending. The advisory index can lag these, so they count even with no advisory |
 | `advisories` | Every advisory whose `vulnerable` range matches and whose `patched` range does not. Ones that apply to `platform` sort first |
 | `error` | Present instead of the result fields when the version is not exact or the sources could not be fetched. The package scan still completes |
 

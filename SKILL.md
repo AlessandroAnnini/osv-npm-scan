@@ -10,7 +10,7 @@ description: >-
   it when the user asks whether their Node version is vulnerable or end of
   life. Do not use this skill for C#, NuGet, Python, or PyPI projects.
 license: MIT
-compatibility: Requires Node.js 18 or newer and network access to https://api.osv.dev and https://raw.githubusercontent.com. Reads npm lockfileVersion 2 and 3 only.
+compatibility: Requires Node.js 18 or newer and network access to https://api.osv.dev, https://raw.githubusercontent.com, and https://nodejs.org. Reads npm lockfileVersion 2 and 3 only.
 metadata:
   author: Alessandro Filippo Annini
   version: "1.1.0"
@@ -36,8 +36,10 @@ The script writes one JSON document to stdout and progress lines to stderr. It d
 By default the runtime check uses the `node` that runs the script. To check the Node version the project deploys on, such as the one in its Docker image or CI, pass it as an exact version:
 
 ```bash
-node /absolute/path/to/osv-npm-scan/scripts/osv-scan.mjs /absolute/path/to/project --node-version 22.22.2
+node /absolute/path/to/osv-npm-scan/scripts/osv-scan.mjs /absolute/path/to/project --node-version 22.22.2 --node-platform linux
 ```
+
+Advisories are scoped to a platform. It defaults to the machine running the scan. Pass `--node-platform linux` for a container image, or the `process.platform` name of the target.
 
 Pass `--node-version` only with an exact `x.y.z` the user gave or the project pins exactly. Do not resolve `22`, `lts/*`, or an `engines` range into a version.
 
@@ -51,7 +53,7 @@ If stdout contains an `error` field, say what it says and stop. A missing lockfi
 - Optional dependencies declared by a workspace or the root
 - Peer dependency edges, so `introducedBy` names the requiring package
 
-Separately, the script checks one Node.js runtime version against the [Node.js core advisories](https://github.com/nodejs/security-wg/tree/main/vuln/core) and the [release schedule](https://github.com/nodejs/Release). The result is in `runtime`. It is not in `findings` and does not count toward `vulnerablePackageVersions`. OSV.dev has no records for Node.js itself.
+Separately, the script checks one Node.js runtime version against the [Node.js core advisories](https://github.com/nodejs/security-wg/tree/main/vuln/core) the [release schedule](https://github.com/nodejs/Release), and the [release list](https://nodejs.org/dist/index.json). The advisory index can lag a security release, so a newer release in the same line that nodejs.org marks as a security release also makes the runtime vulnerable. The result is in `runtime`. It is not in `findings` and does not count toward `vulnerablePackageVersions`. OSV.dev has no records for Node.js itself.
 
 It does not query git, file, link, or other non-registry installs. It does not read `package.json` ranges, `yarn.lock`, `pnpm-lock.yaml`, or OS packages inside Docker images. Do not guess versions for those. Say they were not scanned.
 
@@ -77,8 +79,9 @@ Mention dev-only CRITICAL and HIGH findings in a short paragraph after the produ
 Then the runtime, in its own short section:
 
 - Name the version checked and `runtime.source`. When the source is `process`, say this is the Node that ran the scan and may not be the one the project deploys on
-- When `runtime.endOfLife` is true, say the release line is end of life and unsupported, whatever the advisory count. An end-of-life line stops getting new advisories, so few or none does not mean safe
+- When `runtime.endOfLife` is true, say the release line is end of life and unsupported, whatever the advisory count. An end-of-life line stops getting new advisories, so few or none does not mean safe. Do not present `upgradeTo` as the fix. Recommend moving to a supported LTS line
 - When `runtime.vulnerable` is true, give the count and worst `severity` of advisories with `appliesToPlatform` true, and `upgradeTo`. When `upgradeTo` is null, at least one advisory has no fix in this release line, so the fix is moving to a supported line
+- When `runtime.missedSecurityReleases` is not empty, name them. A security release that has no matching advisory here has not reached the advisory index yet, so its CVEs and severity are unknown. Do not say the runtime is clean
 - Mention advisories for other platforms only as a count
 - When `runtime.error` is present, say the runtime was not checked and why
 

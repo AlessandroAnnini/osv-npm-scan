@@ -257,7 +257,8 @@ test("runtime check scopes advisories to the platform and flags an end-of-life l
   };
   const schedule = { v22: { end: "2027-04-30" }, v18: { end: "2025-04-30" } };
   const now = new Date("2026-10-23T00:00:00Z");
-  const { runtime, warnings } = checkRuntime("22.22.2", "linux", index, schedule, now);
+  const sources = { index, schedule, dist: [] };
+  const { runtime, warnings } = checkRuntime("22.22.2", "linux", sources, now);
   assert.equal(runtime.endOfLife, false);
   assert.equal(runtime.vulnerable, true);
   assert.equal(runtime.severity, "HIGH");
@@ -270,17 +271,52 @@ test("runtime check scopes advisories to the platform and flags an end-of-life l
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /advisory 5/);
 
-  const old = checkRuntime("18.19.1", "linux", index, schedule, now).runtime;
+  const old = checkRuntime("18.19.1", "linux", sources, now).runtime;
   assert.equal(old.endOfLife, true);
   assert.equal(old.advisories[0].severity, "UNKNOWN");
 
-  const clean = checkRuntime("24.18.1", "linux", index, schedule, now).runtime;
+  const clean = checkRuntime("24.18.1", "linux", sources, now).runtime;
   assert.equal(clean.vulnerable, false);
   assert.equal(clean.endOfLife, null, "a line missing from the schedule is unknown");
 });
 
 test("--node-version is read in either form and the root stays positional", () => {
-  assert.deepEqual(parseArgs(["/p", "--node-version", "22.1.0"]), { root: "/p", nodeVersion: "22.1.0" });
-  assert.deepEqual(parseArgs(["--node-version=v20.0.0", "/p"]), { root: "/p", nodeVersion: "v20.0.0" });
-  assert.deepEqual(parseArgs([]), { root: null, nodeVersion: null });
+  assert.deepEqual(parseArgs(["/p", "--node-version", "22.1.0", "--node-platform", "linux"]), {
+    root: "/p",
+    nodeVersion: "22.1.0",
+    nodePlatform: "linux",
+  });
+  assert.deepEqual(parseArgs(["--node-version=v20.0.0", "/p", "--node-platform=win32"]), {
+    root: "/p",
+    nodeVersion: "v20.0.0",
+    nodePlatform: "win32",
+  });
+  assert.deepEqual(parseArgs([]), { root: null, nodeVersion: null, nodePlatform: null });
+});
+
+test("a newer security release in the same line counts when the index has not caught up", () => {
+  const dist = [
+    { version: "v25.0.0", security: true },
+    { version: "v24.22.1", security: true },
+    { version: "v24.22.0", security: false },
+    { version: "v24.20.0", security: true },
+    { version: "v22.23.4", security: true },
+  ];
+  const index = {
+    1: { cve: ["CVE-2026-1"], vulnerable: "24.x", patched: "^24.21.0", severity: "high" },
+  };
+  const now = new Date("2026-10-23T00:00:00Z");
+  const lagging = checkRuntime("24.22.0", "linux", { index, schedule: {}, dist }, now).runtime;
+  assert.equal(lagging.vulnerable, true);
+  assert.equal(lagging.severity, null, "release data has no severity");
+  assert.deepEqual(lagging.missedSecurityReleases, ["24.22.1"]);
+  assert.equal(lagging.upgradeTo, "24.22.1");
+
+  const both = checkRuntime("24.19.0", "linux", { index, schedule: {}, dist }, now).runtime;
+  assert.deepEqual(both.missedSecurityReleases, ["24.20.0", "24.22.1"]);
+  assert.equal(both.upgradeTo, "24.22.1", "the newer security release beats the index fix");
+
+  const current = checkRuntime("24.22.1", "linux", { index, schedule: {}, dist }, now).runtime;
+  assert.equal(current.vulnerable, false);
+  assert.deepEqual(current.missedSecurityReleases, []);
 });
