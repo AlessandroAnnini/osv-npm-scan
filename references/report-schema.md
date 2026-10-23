@@ -61,7 +61,7 @@ A skipped lockfile, an unreadable directory, or a non-registry install does not 
 
 ## Runtime (npm)
 
-`runtime` here is the Node.js runtime. The NuGet skill has a `runtime` for .NET with the same intent and different fields, and the PyPI skill has none. It is one Node.js version matched against the [nodejs/security-wg core index](https://github.com/nodejs/security-wg/blob/main/vuln/core/index.json), the [nodejs/Release schedule](https://github.com/nodejs/Release/blob/main/schedule.json), and the [nodejs.org release list](https://nodejs.org/dist/index.json). It is separate from `findings` and does not change `vulnerablePackageVersions`.
+`runtime` here is the Node.js runtime. The NuGet and PyPI skills have a `runtime` for .NET and CPython with the same intent and different fields. It is one Node.js version matched against the [nodejs/security-wg core index](https://github.com/nodejs/security-wg/blob/main/vuln/core/index.json), the [nodejs/Release schedule](https://github.com/nodejs/Release/blob/main/schedule.json), and the [nodejs.org release list](https://nodejs.org/dist/index.json). It is separate from `findings` and does not change `vulnerablePackageVersions`.
 
 | Field | Meaning |
 | --- | --- |
