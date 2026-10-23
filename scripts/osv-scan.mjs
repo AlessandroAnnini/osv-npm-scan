@@ -11,6 +11,9 @@ const API = "https://api.osv.dev/v1";
 const BATCH = 800;
 const PAGE_LIMIT = 20;
 const RANK = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1, UNKNOWN: 0 };
+const NODE_CORE_INDEX =
+  "https://raw.githubusercontent.com/nodejs/security-wg/main/vuln/core/index.json";
+const NODE_SCHEDULE = "https://raw.githubusercontent.com/nodejs/Release/main/schedule.json";
 
 function fail(error) {
   process.stdout.write(JSON.stringify({ ecosystem: ECOSYSTEM, error }, null, 2) + "\n");
@@ -367,6 +370,148 @@ export function summarizeGroup(group, packageName, installed) {
   };
 }
 
+const PARTIAL = /^(\^|~|>=|<=|>|<|=)?v?(\d+|[xX*])(?:\.(\d+|[xX*]))?(?:\.(\d+|[xX*]))?$/;
+
+function wild(part) {
+  return part === undefined || part === "x" || part === "X" || part === "*";
+}
+
+// One comparator such as ^22.23.2, 22.x, >=6.0.0, or <= 10. Null when unparseable.
+function comparator(token) {
+  const match = token.match(PARTIAL);
+  if (!match) return null;
+  const op = match[1] ?? "";
+  if (wild(match[2])) return () => true;
+  const major = Number(match[2]);
+  const minor = wild(match[3]) ? null : Number(match[3]);
+  const patch = minor === null || wild(match[4]) ? null : Number(match[4]);
+  const lower = `${major}.${minor ?? 0}.${patch ?? 0}`;
+  const exact = patch !== null;
+  const upper =
+    minor === null ? `${major + 1}.0.0` : patch === null ? `${major}.${minor + 1}.0` : null;
+  const cmp = (v, w) => compareVersions(v, w);
+  switch (op) {
+    case "":
+    case "=":
+      return exact ? (v) => cmp(v, lower) === 0 : (v) => cmp(v, lower) >= 0 && cmp(v, upper) < 0;
+    case ">=":
+      return (v) => cmp(v, lower) >= 0;
+    case ">":
+      return exact ? (v) => cmp(v, lower) > 0 : (v) => cmp(v, upper) >= 0;
+    case "<":
+      return (v) => cmp(v, lower) < 0;
+    case "<=":
+      return exact ? (v) => cmp(v, lower) <= 0 : (v) => cmp(v, upper) < 0;
+    case "~": {
+      const top = minor === null ? `${major + 1}.0.0` : `${major}.${minor + 1}.0`;
+      return (v) => cmp(v, lower) >= 0 && cmp(v, top) < 0;
+    }
+    case "^": {
+      let top;
+      if (major > 0 || minor === null) top = `${major + 1}.0.0`;
+      else if (minor > 0 || patch === null) top = `0.${minor + 1}.0`;
+      else top = `0.0.${patch + 1}`;
+      return (v) => cmp(v, lower) >= 0 && cmp(v, top) < 0;
+    }
+    default:
+      return null;
+  }
+}
+
+// The node-semver subset used by nodejs/security-wg: || between sets, spaces mean AND,
+// and an operator may stand apart from its version (">= 10.9.0"). Null when unparseable.
+export function satisfiesRange(version, range) {
+  if (typeof range !== "string" || !range.trim()) return null;
+  let any = false;
+  for (const set of range.split("||")) {
+    const tokens = [];
+    for (const part of set.trim().split(/\s+/)) {
+      if (/^(\^|~|>=|<=|>|<|=)$/.test(part)) tokens.push(part);
+      else if (tokens.length && /^(\^|~|>=|<=|>|<|=)$/.test(tokens.at(-1))) tokens.push(tokens.pop() + part);
+      else tokens.push(part);
+    }
+    const tests = tokens.map(comparator);
+    if (!tokens.length || tests.some((t) => t === null)) return null;
+    if (tests.every((t) => t(version))) any = true;
+  }
+  return any;
+}
+
+// The ^X.Y.Z term in `patched` on the installed major. Null when that line has no fix.
+export function runtimeFix(patched, version) {
+  const major = parseSemver(version)?.major;
+  if (typeof patched !== "string") return null;
+  for (const set of patched.split("||")) {
+    const match = set.trim().match(/^(?:\^|>=\s*)v?(\d+)\.(\d+)\.(\d+)$/);
+    if (match && Number(match[1]) === major) {
+      const fix = `${match[1]}.${match[2]}.${match[3]}`;
+      if (compareVersions(fix, version) > 0) return fix;
+    }
+  }
+  return null;
+}
+
+// Match one Node version against the nodejs/security-wg core index and the release schedule.
+export function checkRuntime(version, platform, index, schedule, now = new Date()) {
+  const line = `v${parseSemver(version)?.major}`;
+  const end = schedule?.[line]?.end ?? null;
+  const advisories = [];
+  const unparsed = [];
+  for (const [key, entry] of Object.entries(index ?? {})) {
+    const hit = satisfiesRange(version, entry.vulnerable);
+    if (hit === null) {
+      unparsed.push(`node core advisory ${key}: cannot parse vulnerable range ${JSON.stringify(entry.vulnerable)}`);
+      continue;
+    }
+    if (!hit) continue;
+    if (entry.patched !== undefined && entry.patched !== "") {
+      const patched = satisfiesRange(version, entry.patched);
+      if (patched === null) {
+        unparsed.push(`node core advisory ${key}: cannot parse patched range ${JSON.stringify(entry.patched)}`);
+        continue;
+      }
+      if (patched) continue;
+    }
+    const environments = Array.isArray(entry.affectedEnvironments) && entry.affectedEnvironments.length
+      ? entry.affectedEnvironments
+      : ["all"];
+    const cves = Array.isArray(entry.cve) ? entry.cve : [];
+    const label = String(entry.severity ?? "").trim().toUpperCase();
+    advisories.push({
+      id: cves[0] ?? `NODE-CORE-${key}`,
+      aliases: cves.slice(1),
+      summary: entry.description ?? "",
+      severity: label === "MODERATE" ? "MEDIUM" : RANK[label] !== undefined ? label : "UNKNOWN",
+      fixed: runtimeFix(entry.patched, version),
+      environments,
+      appliesToPlatform: environments.includes("all") || environments.includes(platform),
+      url: entry.ref ?? null,
+    });
+  }
+  advisories.sort(
+    (a, b) =>
+      b.appliesToPlatform - a.appliesToPlatform ||
+      (RANK[b.severity] ?? 0) - (RANK[a.severity] ?? 0) ||
+      a.id.localeCompare(b.id),
+  );
+  const applicable = advisories.filter((item) => item.appliesToPlatform);
+  return {
+    runtime: {
+      name: "node",
+      version,
+      platform,
+      releaseLine: line,
+      endOfLife: end ? new Date(`${end}T23:59:59Z`) < now : null,
+      endOfLifeDate: end,
+      vulnerable: applicable.length > 0,
+      severity: applicable[0]?.severity ?? null,
+      upgradeTo: applicable.length ? upgradeTo(applicable) : null,
+      advisories,
+    },
+    warnings: unparsed,
+  };
+}
+
 function readLockfile(root, rel) {
   const full = path.join(root, rel);
   try {
@@ -414,8 +559,41 @@ function upgradeTo(advisories) {
     .at(-1);
 }
 
+export function parseArgs(argv) {
+  const args = { root: null, nodeVersion: null };
+  for (let i = 0; i < argv.length; i += 1) {
+    const arg = argv[i];
+    if (arg === "--node-version") args.nodeVersion = argv[++i] ?? "";
+    else if (arg.startsWith("--node-version=")) args.nodeVersion = arg.slice(15);
+    else if (args.root === null) args.root = arg;
+  }
+  return args;
+}
+
+async function scanRuntime(nodeVersion) {
+  const source = nodeVersion === null ? "process" : "flag";
+  const version = (nodeVersion ?? process.version).replace(/^v/, "");
+  if (!/^\d+\.\d+\.\d+$/.test(version)) {
+    return { runtime: { name: "node", version, source, error: "not an exact x.y.z version" }, warnings: [] };
+  }
+  console.error(`node runtime: ${version} (${source})`);
+  try {
+    const [index, schedule] = await Promise.all([
+      requestJson(NODE_CORE_INDEX),
+      requestJson(NODE_SCHEDULE),
+    ]);
+    const result = checkRuntime(version, process.platform, index, schedule);
+    result.runtime = { ...result.runtime, source };
+    return result;
+  } catch (err) {
+    const error = `node runtime not checked: ${err.message || err}`;
+    return { runtime: { name: "node", version, source, error }, warnings: [error] };
+  }
+}
+
 async function main() {
-  const root = path.resolve(process.argv[2] || process.cwd());
+  const args = parseArgs(process.argv.slice(2));
+  const root = path.resolve(args.root || process.cwd());
   if (!fs.existsSync(root) || !fs.statSync(root).isDirectory()) {
     fail(`not a directory: ${root}`);
   }
@@ -543,6 +721,8 @@ async function main() {
   });
 
   console.error(`vulnerable versions: ${findings.length}`);
+  const runtime = await scanRuntime(args.nodeVersion);
+  warnings.push(...runtime.warnings);
   const report = {
     ecosystem: ECOSYSTEM,
     scannedAt: new Date().toISOString(),
@@ -551,6 +731,7 @@ async function main() {
     packageVersions: packages.length,
     vulnerablePackageVersions: findings.length,
     findings,
+    runtime: runtime.runtime,
   };
   if (warnings.length) report.warnings = warnings;
   process.stdout.write(JSON.stringify(report, null, 2) + "\n");

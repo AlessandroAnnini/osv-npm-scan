@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
+  checkRuntime,
   collectLockfileData,
   compareVersions,
   cvssV3,
@@ -11,6 +12,9 @@ import {
   introducedBy,
   locationFor,
   lowestFix,
+  parseArgs,
+  runtimeFix,
+  satisfiesRange,
   summarizeGroup,
   walkLockfiles,
 } from "./osv-scan.mjs";
@@ -218,4 +222,65 @@ test("walk finds a lockfile under dist and skips node_modules and symlinks", () 
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("node core ranges: AND within a set, detached operators, and partial versions", () => {
+  assert.equal(satisfiesRange("22.22.2", "22.x || 24.x || 26.x"), true);
+  assert.equal(satisfiesRange("23.1.0", "22.x || 24.x || 26.x"), false);
+  assert.equal(satisfiesRange("22.23.2", "^22.23.2 || ^24.18.1"), true);
+  assert.equal(satisfiesRange("22.23.1", "^22.23.2 || ^24.18.1"), false);
+  assert.equal(satisfiesRange("6.1.0", ">=6.0.0 <6.2.0 || 5.x || 4.x"), true);
+  assert.equal(satisfiesRange("6.2.0", ">=6.0.0 <6.2.0 || 5.x || 4.x"), false);
+  assert.equal(satisfiesRange("10.9.0", "^6.14.4 || ^8.11.4 || >= 10.9.0"), true);
+  assert.equal(satisfiesRange("10.8.0", "^6.14.4 || ^8.11.4 || >= 10.9.0"), false);
+  assert.equal(satisfiesRange("10.99.0", "<= 10"), true);
+  assert.equal(satisfiesRange("11.0.0", "<= 10"), false);
+  assert.equal(satisfiesRange("8.5.0", "8.5.0"), true);
+  assert.equal(satisfiesRange("8.5.1", "8.5.0"), false);
+  assert.equal(satisfiesRange("8.5.0", "not a range"), null);
+  assert.equal(satisfiesRange("8.5.0", ""), null);
+});
+
+test("the runtime fix is the patched term on the installed major", () => {
+  assert.equal(runtimeFix("^22.23.2 || ^24.18.1", "22.22.2"), "22.23.2");
+  assert.equal(runtimeFix("^22.23.2 || ^24.18.1", "23.11.0"), null);
+  assert.equal(runtimeFix(undefined, "22.22.2"), null);
+});
+
+test("runtime check scopes advisories to the platform and flags an end-of-life line", () => {
+  const index = {
+    1: { cve: ["CVE-2026-1"], vulnerable: "22.x || 24.x", patched: "^22.23.2 || ^24.18.1", severity: "high", affectedEnvironments: ["all"], description: "a", ref: "https://example.test/1" },
+    2: { cve: ["CVE-2026-2"], vulnerable: "22.x", patched: "^22.24.0", severity: "critical", affectedEnvironments: ["win32"] },
+    3: { cve: [], vulnerable: "22.x", severity: "low" },
+    4: { cve: ["CVE-2026-4"], vulnerable: "18.x" },
+    5: { vulnerable: "bogus" },
+  };
+  const schedule = { v22: { end: "2027-04-30" }, v18: { end: "2025-04-30" } };
+  const now = new Date("2026-10-23T00:00:00Z");
+  const { runtime, warnings } = checkRuntime("22.22.2", "linux", index, schedule, now);
+  assert.equal(runtime.endOfLife, false);
+  assert.equal(runtime.vulnerable, true);
+  assert.equal(runtime.severity, "HIGH");
+  assert.deepEqual(runtime.advisories.map((a) => [a.id, a.appliesToPlatform]), [
+    ["CVE-2026-1", true],
+    ["NODE-CORE-3", true],
+    ["CVE-2026-2", false],
+  ]);
+  assert.equal(runtime.upgradeTo, null, "advisory 3 has no fix in this line");
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /advisory 5/);
+
+  const old = checkRuntime("18.19.1", "linux", index, schedule, now).runtime;
+  assert.equal(old.endOfLife, true);
+  assert.equal(old.advisories[0].severity, "UNKNOWN");
+
+  const clean = checkRuntime("24.18.1", "linux", index, schedule, now).runtime;
+  assert.equal(clean.vulnerable, false);
+  assert.equal(clean.endOfLife, null, "a line missing from the schedule is unknown");
+});
+
+test("--node-version is read in either form and the root stays positional", () => {
+  assert.deepEqual(parseArgs(["/p", "--node-version", "22.1.0"]), { root: "/p", nodeVersion: "22.1.0" });
+  assert.deepEqual(parseArgs(["--node-version=v20.0.0", "/p"]), { root: "/p", nodeVersion: "v20.0.0" });
+  assert.deepEqual(parseArgs([]), { root: null, nodeVersion: null });
 });
