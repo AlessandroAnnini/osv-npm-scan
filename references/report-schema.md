@@ -59,9 +59,9 @@ Trust `production` for what `npm ci` installs at runtime. A name can be listed i
 
 A skipped lockfile, an unreadable directory, or a non-registry install does not fail the scan. `warnings` is present only then. Each entry is the path and the reason. A git, file, link, or other non-registry install is named and was not queried. An `http` or `https` resolved URL is queried. A missing `resolved` URL is queried too.
 
-## Runtime (npm only)
+## Runtime (npm)
 
-`runtime` is specific to this skill. The NuGet and PyPI skills do not emit it. It is one Node.js version matched against the [nodejs/security-wg core index](https://github.com/nodejs/security-wg/blob/main/vuln/core/index.json) the [nodejs/Release schedule](https://github.com/nodejs/Release/blob/main/schedule.json), and the [nodejs.org release list](https://nodejs.org/dist/index.json). It is separate from `findings` and does not change `vulnerablePackageVersions`.
+`runtime` here is the Node.js runtime. The NuGet skill has a `runtime` for .NET with the same intent and different fields, and the PyPI skill has none. It is one Node.js version matched against the [nodejs/security-wg core index](https://github.com/nodejs/security-wg/blob/main/vuln/core/index.json), the [nodejs/Release schedule](https://github.com/nodejs/Release/blob/main/schedule.json), and the [nodejs.org release list](https://nodejs.org/dist/index.json). It is separate from `findings` and does not change `vulnerablePackageVersions`.
 
 | Field | Meaning |
 | --- | --- |
